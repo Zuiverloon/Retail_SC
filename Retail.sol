@@ -5,77 +5,6 @@
 pragma solidity ^0.8.0;
 
 contract Retail {
-    modifier transactionIDValid(uint _txid) {
-        require(isTransactionIDValid(_txid), "Invalid transaction ID");
-        _;
-    }
-    modifier productIDValid(uint _pid) {
-        require(isProductIDValid(_pid), "Invalid product ID");
-        _;
-    }
-    modifier canViewTransaction(uint _id, address _sender) {
-        require(
-            _sender == sellers[0] || isTransactionBelongToBuyer(_sender, _id),
-            "You are not allowed to check this tx"
-        );
-        _;
-    }
-    modifier TransactionBelongToBuyer(uint _id, address _sender) {
-        require(
-            isTransactionBelongToBuyer(_sender, _id),
-            "The tx is not yours!"
-        );
-        _;
-    }
-    modifier returnRequestEnabled(uint _txid, address _sender) {
-        require(isTransactionIDValid(_txid), "Invalid transaction ID");
-        require(
-            isTransactionBelongToBuyer(_sender, _txid),
-            "The transaction does not belong to you!"
-        );
-        require(
-            transactions[_txid].status == TransactionStatus.PURCHASED,
-            "You cannot return this."
-        );
-        _;
-    }
-    modifier isBuyerPayEnoughEth(uint _eth, Purchase[] memory _purchases) {
-        uint sumCost = 0;
-        for (uint i = 0; i < _purchases.length; i++) {
-            uint productID = _purchases[i].productID;
-            uint quantity = _purchases[i].quantity;
-            uint price = products[productID].price;
-            uint cost = quantity * price;
-            sumCost += cost;
-        }
-        require(_eth == sumCost, "You should pay correct eth!");
-        _;
-    }
-    modifier isRegisteredAsBuyer(address _sender) {
-        require(isBuyerRegistered(_sender), "The buyer has not registered yet"); // if the buyer has not registered, throw error!
-        _;
-    }
-    modifier isNotRegisteredAsBuyer(address _sender) {
-        require(!isBuyerRegistered(_sender), "The buyer has registered !"); // if the buyer has registered, throw error!
-        _;
-    }
-    modifier isNotRegisteredAsSeller(address _sender) {
-        require(
-            !isSellerRegistered(_sender),
-            "You are registered as a seller !"
-        ); // sellers are not allowed to be buyers!
-        _;
-    }
-    modifier hasNoSeller() {
-        require(sellers.length == 0, "Only one seller are allowed!"); // only one address can be the seller.
-        _;
-    }
-    modifier isDepositEnough(uint _deposit) {
-        uint eth = _deposit / (10 ** 18);
-        require(eth >= sellerDepositThreshold, "You should deposit more eth!"); // the seller should deposit more eth
-        _;
-    }
-
     struct Buyer {
         address addr;
         string name;
@@ -115,7 +44,7 @@ contract Retail {
     address[] public sellers; // the addresses of buyers
 
     //todo: public for debuging, need to be private
-    uint public sellerDepositThreshold = 10; // as long as one pay more than 10 eth can it becomes the seller.
+    uint public sellerDepositThreshold = 50; // as long as one pay more than 10 eth can it becomes the seller.
     uint public temporaryBalance = 0; // before the transaction is completed, all the eth should be kept in here.
     uint public sellerDeposit = 0; // the balance of the seller (including deposit)
     // Transaction[] transactions;
@@ -132,11 +61,12 @@ contract Retail {
     mapping(address => uint[]) public buyerTransactions;
 
     mapping(uint => Product) public products;
-    uint productCount = 0;
+    uint public productCount = 0;
 
     mapping(uint => Transaction) public transactions;
-    uint transactionCount = 0;
-    uint returnRequestTxCount = 0;
+    uint public transactionCount = 0;
+    uint public returnRequestTxCount = 0;
+    uint public returnTxCount = 0;
 
     function ethFromWei(uint _wei) public pure returns (uint) {
         return _wei / (10 ** 18);
@@ -162,27 +92,27 @@ contract Retail {
     }
 
     function isBuyerRegistered(address _addr) private view returns (bool) {
-        // to check whether a buyer has registered
+        // to check whether the sender has registered as a buyer
         return buyers[_addr].addr != address(0);
     }
 
     function isSellerRegistered(address _addr) private view returns (bool) {
-        // to check whether a seller has registered
-        for (uint i = 0; i < sellers.length; i++) {
-            if (sellers[i] == _addr) return true;
-        }
-        return false;
+        // to check whether the sender has registered as a seller
+        if (sellers.length == 0) return false;
+        return _addr == sellers[0];
+    }
+
+    modifier buyerRegisterCriteria(address _sender) {
+        require(!isBuyerRegistered(_sender), "You have registered!"); // One cannot register as buyer twice.
+        require(!isSellerRegistered(_sender), "You are a seller!"); // A seller cannot register as a buyer
+        _;
     }
 
     function buyerRegister(
         string memory _name,
         string memory _email,
         string memory _shipAddr
-    )
-        public
-        isNotRegisteredAsBuyer(msg.sender)
-        isNotRegisteredAsSeller(msg.sender)
-    {
+    ) public buyerRegisterCriteria(msg.sender) {
         address buyer = msg.sender;
         Buyer storage buyerObj = buyers[buyer];
         buyerObj.addr = buyer;
@@ -191,24 +121,43 @@ contract Retail {
         buyerObj.shipAddr = _shipAddr;
     }
 
+    modifier buyerProfileUpdateCriteria(address _sender) {
+        require(isBuyerRegistered(_sender), "You are not a buyer!"); // Only registered buyers can update profile
+        _;
+    }
+
     function buyerProfileUpdate(
         string memory _name,
         string memory _email,
         string memory _shipAddr
-    ) public isRegisteredAsBuyer(msg.sender) {
+    ) public buyerProfileUpdateCriteria(msg.sender) {
         address buyer = msg.sender;
         buyers[buyer].name = _name;
         buyers[buyer].email = _email;
         buyers[buyer].shipAddr = _shipAddr;
     }
 
+    function hasSeller() private view returns (bool) {
+        return sellers.length > 0;
+    }
+
+    modifier sellerRegisterCriteria(address _sender, uint _deposit) {
+        require(!hasSeller(), "There is a seller registered!"); //Only one seller is allowed.
+        require(
+            !isBuyerRegistered(_sender),
+            "You are already registered as a buyer!"
+        ); // A buyer cannot be a seller.
+        require(
+            _deposit / (10 ** 18) >= sellerDepositThreshold,
+            "You should deposit more eth!"
+        ); // the seller should deposit enough eth
+        _;
+    }
+
     function sellerRegister()
         external
         payable
-        hasNoSeller
-        isNotRegisteredAsBuyer(msg.sender)
-        isNotRegisteredAsSeller(msg.sender)
-        isDepositEnough(msg.value)
+        sellerRegisterCriteria(msg.sender, msg.value)
     {
         address seller = msg.sender;
         uint deposit = msg.value / (10 ** 18); // convert wei to eth
@@ -216,27 +165,64 @@ contract Retail {
         sellers.push(seller);
     }
 
+    modifier addProductCriteria(address _sender) {
+        require(
+            isSellerRegistered(_sender),
+            "You are not a seller,not allowed to add product"
+        ); // Only the seller can add product.
+        _;
+    }
+
     function addProduct(
-        Product memory _product
-    ) public isRegisteredAsBuyer(msg.sender) {
+        string memory _name,
+        uint _price,
+        uint _inventory
+    ) public addProductCriteria(msg.sender) {
         uint newProductID = productCount;
         productCount++;
         Product storage newProduct = products[newProductID];
         newProduct.id = newProductID;
-        newProduct.name = _product.name;
-        newProduct.price = _product.price;
-        newProduct.inventory = _product.inventory;
+        newProduct.name = _name;
+        newProduct.price = _price;
+        newProduct.inventory = _inventory;
+    }
+
+    modifier getProductInfoCriteria(uint _pid) {
+        require(isProductIDValid(_pid), "Invalid product ID"); // The product id should be valid;
+        _;
     }
 
     function getProductInfo(
         uint _id
-    ) public view productIDValid(_id) returns (Product memory) {
+    ) public view getProductInfoCriteria(_id) returns (Product memory) {
         return products[_id];
+    }
+
+    modifier initiateTransactionCriteria(
+        uint _wei,
+        Purchase[] memory _purchases
+    ) {
+        mapping(uint => Product) storage productInInventory = products;
+        uint eth = ethFromWei(_wei);
+        uint sumCost = 0;
+        for (uint i = 0; i < _purchases.length; i++) {
+            uint productID = _purchases[i].productID;
+            uint quantity = _purchases[i].quantity;
+            require(
+                quantity <= productInInventory[productID].inventory,
+                "Product not enough in inventory!"
+            );
+            uint price = products[productID].price;
+            uint cost = quantity * price;
+            sumCost += cost;
+        }
+        require(eth == sumCost, "You should pay correct eth!");
+        _;
     }
 
     function initiateTransaction(
         Purchase[] memory purchases
-    ) public payable isBuyerPayEnoughEth(ethFromWei(msg.value), purchases) {
+    ) public payable initiateTransactionCriteria(msg.value, purchases) {
         uint newTransactionID = transactionCount;
         transactionCount++;
         Transaction storage t = transactions[newTransactionID];
@@ -257,23 +243,55 @@ contract Retail {
         buyerTransactions[msg.sender].push(newTransactionID);
     }
 
+    modifier getTransactionInfoCriteria(address _sender, uint _tid) {
+        if (isSellerRegistered(_sender)) {
+            require(isTransactionIDValid(_tid), "Invalid Transaction ID!"); // Seller can see all VALID transactions.
+        } else if (isBuyerRegistered(_sender)) {
+            require(
+                isTransactionBelongToBuyer(_sender, _tid),
+                "The TX does not belong to you!"
+            ); // One buyer can only see his/her own TX.
+        } else {
+            require(isBuyerRegistered(_sender), "You are not a buyer!"); // Only registered buyers can see some transactions.
+        }
+        _;
+    }
+
     function getTransactionInfo(
         uint _id
     )
         public
         view
-        transactionIDValid(_id)
-        canViewTransaction(_id, msg.sender)
+        getTransactionInfoCriteria(msg.sender, _id)
         returns (Transaction memory)
     {
         return transactions[_id];
     }
 
+    modifier returnRequestModifier(address _sender, uint _txid) {
+        require(isBuyerRegistered(_sender), "You are not a buyer!"); //Only buyers can request a return.
+        require(isTransactionIDValid(_txid), "Invalid transaction ID");
+        require(
+            isTransactionBelongToBuyer(_sender, _txid),
+            "The transaction does not belong to you!"
+        );
+        require(
+            transactions[_txid].status == TransactionStatus.PURCHASED,
+            "You cannot return this."
+        );
+        _;
+    }
+
     function returnRequest(
         uint _id
-    ) public returnRequestEnabled(_id, msg.sender) {
+    ) public returnRequestModifier(msg.sender, _id) {
         transactions[_id].status = TransactionStatus.RETURN_REQUESTED;
         returnRequestTxCount++;
+        returnTxCount++;
+        if (returnTxCount % 10 == 0) {
+            // for every 10 return requests, the seller will receive a penalty. The seller deposit will be deduct by 1 eth, as long as the seller deposit is not zero.
+            if (sellerDeposit > 0) sellerDeposit--;
+        }
     }
 
     modifier getAllReturnRequestCriteria(address _sender) {
@@ -290,9 +308,11 @@ contract Retail {
         Transaction[] memory returnRequestTx = new Transaction[](
             returnRequestTxCount
         );
+        uint returnRequestTxIndex = 0;
         for (uint i = 0; i < transactionCount; i++) {
             if (transactions[i].status == TransactionStatus.RETURN_REQUESTED) {
-                returnRequestTx[i] = transactions[i];
+                returnRequestTx[returnRequestTxIndex] = transactions[i];
+                returnRequestTxIndex++;
             }
         }
         return returnRequestTx;
