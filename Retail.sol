@@ -39,51 +39,43 @@ contract Retail {
         uint quantity;
     }
 
-    //address[] public buyers; // the addresses of buyers
+    address[] private sellers; // the addresses of buyers
 
-    address[] public sellers; // the addresses of buyers
+    uint private sellerDepositThreshold = 50; // as long as one pay more than this amount of eth can he/she becomes the seller.
+    uint private temporaryBalance = 0; // before the transaction is completed/returned, all the eth should be kept in here.
+    uint private sellerDeposit = 0;
 
-    //todo: public for debuging, need to be private
-    uint public sellerDepositThreshold = 50; // as long as one pay more than 10 eth can it becomes the seller.
-    uint public temporaryBalance = 0; // before the transaction is completed, all the eth should be kept in here.
-    uint public sellerDeposit = 0; // the balance of the seller (including deposit)
-    // Transaction[] transactions;
+    mapping(address => Buyer) private buyers;
+    mapping(address => uint[]) private buyerTransactions;
 
-    mapping(address => string) public buyerName; // the name of each buyer
-    //todo: public for debuging, need to be private
+    mapping(uint => Product) private products;
+    uint private productCount = 0;
 
-    mapping(address => string) public buyerEmail; // the email of each buyer
-    //todo: public for debuging, need to be private
+    mapping(uint => Transaction) private transactions;
+    uint private transactionCount = 0;
+    uint private returnRequestTxCount = 0;
+    uint private returnTxCount = 0;
 
-    mapping(address => string) public buyerAddr; // the shipping address of each buyer
-    //todo: public for debuging, need to be private
-    mapping(address => Buyer) public buyers;
-    mapping(address => uint[]) public buyerTransactions;
-
-    mapping(uint => Product) public products;
-    uint public productCount = 0;
-
-    mapping(uint => Transaction) public transactions;
-    uint public transactionCount = 0;
-    uint public returnRequestTxCount = 0;
-    uint public returnTxCount = 0;
-
-    function ethFromWei(uint _wei) public pure returns (uint) {
+    function ethFromWei(uint _wei) private pure returns (uint) {
+        // to convert wei to eth
         return _wei / (10 ** 18);
     }
 
     function isTransactionIDValid(uint _txid) private view returns (bool) {
+        // to check whether the tx id is valid
         return _txid >= 0 && _txid < transactionCount;
     }
 
     function isProductIDValid(uint _pid) private view returns (bool) {
+        // to check whether the product id is valid
         return _pid >= 0 && _pid < productCount;
     }
 
     function isTransactionBelongToBuyer(
         address _sender,
         uint _id
-    ) public view returns (bool) {
+    ) private view returns (bool) {
+        // to check whether the tx id belongs to someone
         uint[] memory txids = buyerTransactions[_sender];
         for (uint i = 0; i < txids.length; i++) {
             if (txids[i] == _id) return true;
@@ -138,6 +130,7 @@ contract Retail {
     }
 
     function hasSeller() private view returns (bool) {
+        // to check whether there is already a registered seller
         return sellers.length > 0;
     }
 
@@ -198,43 +191,97 @@ contract Retail {
         return products[_id];
     }
 
-    modifier initiateTransactionCriteria(
-        uint _wei,
+    function isPurchaseIDsValid(
         Purchase[] memory _purchases
-    ) {
+    ) private view returns (bool) {
+        // to check whether product ids in purchases are valid
+        for (uint i = 0; i < _purchases.length; i++) {
+            if (!isProductIDValid(_purchases[i].productID)) return false;
+        }
+        return true;
+    }
+
+    function isPurchasesHaveDupID(
+        Purchase[] memory _purchases
+    ) private pure returns (bool) {
+        // to check whether there are duplicated product ids in one tx (which I think is not allowed)
+        for (uint i = 0; i < _purchases.length - 1; i++) {
+            for (uint j = i + 1; j < _purchases.length; j++) {
+                if (_purchases[j].productID == _purchases[i].productID)
+                    return true;
+            }
+        }
+        return false;
+    }
+
+    function isInventoryEnough(
+        Purchase[] memory _purchases
+    ) private view returns (bool) {
+        // to check whether the inventory is enough
         mapping(uint => Product) storage productInInventory = products;
+        for (uint i = 0; i < _purchases.length; i++) {
+            uint productID = _purchases[i].productID;
+            uint quantity = _purchases[i].quantity;
+            if (quantity > productInInventory[productID].inventory)
+                return false;
+        }
+        return true;
+    }
+
+    function isETHEnough(
+        Purchase[] memory _purchases,
+        uint _wei
+    ) private view returns (bool) {
+        // to check whether the buyer pays enough eth for this tx
         uint eth = ethFromWei(_wei);
         uint sumCost = 0;
         for (uint i = 0; i < _purchases.length; i++) {
             uint productID = _purchases[i].productID;
             uint quantity = _purchases[i].quantity;
-            require(
-                quantity <= productInInventory[productID].inventory,
-                "Product not enough in inventory!"
-            );
             uint price = products[productID].price;
             uint cost = quantity * price;
             sumCost += cost;
         }
-        require(eth == sumCost, "You should pay correct eth!");
+        return eth == sumCost;
+    }
+
+    modifier initiateTransactionCriteria(
+        uint _wei,
+        Purchase[] memory _purchases
+    ) {
+        require(isPurchaseIDsValid(_purchases), "Invalid product id!");
+        require(!isPurchasesHaveDupID(_purchases), "There are duplicated ids!");
+        require(
+            isInventoryEnough(_purchases),
+            "There are not enough inventories!"
+        );
+        require(
+            isETHEnough(_purchases, msg.value),
+            "You should pay correct eth!"
+        );
         _;
     }
 
     function initiateTransaction(
-        Purchase[] memory purchases
-    ) public payable initiateTransactionCriteria(msg.value, purchases) {
+        Purchase[] memory _purchases
+    ) public payable initiateTransactionCriteria(msg.value, _purchases) {
+        mapping(uint => Product) storage storageProducts = products;
         uint newTransactionID = transactionCount;
         transactionCount++;
         Transaction storage t = transactions[newTransactionID];
         t.id = newTransactionID;
         uint transactionAmount = 0;
-        for (uint i = 0; i < purchases.length; i++) {
+        for (uint i = 0; i < _purchases.length; i++) {
             Purchase memory newPurchase;
             t.purchases.push(newPurchase);
             Purchase storage p = t.purchases[t.purchases.length - 1];
-            p.productID = purchases[i].productID;
-            p.quantity = purchases[i].quantity;
-            transactionAmount += p.productID * p.quantity;
+            p.productID = _purchases[i].productID;
+            p.quantity = _purchases[i].quantity;
+            storageProducts[_purchases[i].productID].inventory -= _purchases[i]
+                .quantity; //deduct inventory
+            transactionAmount +=
+                storageProducts[_purchases[i].productID].price *
+                p.quantity;
         }
         t.status = TransactionStatus.PURCHASED;
         t.amount = transactionAmount;
@@ -332,9 +379,16 @@ contract Retail {
         returnNeededTx.status = TransactionStatus.RETURNED;
         returnRequestTxCount--;
 
+        Purchase[] storage returnedPurchases = transactions[_id].purchases;
+        for (uint i = 0; i < returnedPurchases.length; i++) {
+            Purchase storage p = returnedPurchases[i];
+            products[p.productID].inventory += p.quantity; // give back the inventory.
+        }
+
         address payable buyer = payable(returnNeededTx.buyer);
         uint returnETHAmount = returnNeededTx.amount;
-        buyer.transfer(returnETHAmount);
+        bool sent = buyer.send(returnETHAmount * 10 ** 18);
+        require(sent, "Failed to send Ether");
         temporaryBalance -= returnETHAmount;
     }
 
@@ -356,6 +410,8 @@ contract Retail {
         transactions[_id].status = TransactionStatus.COMPLETED;
 
         address payable seller = payable(sellers[0]);
-        seller.transfer(ETHAmount);
+        bool sent = seller.send(ETHAmount * 10 ** 18);
+        require(sent, "Failed to send Ether");
+        temporaryBalance -= ETHAmount;
     }
 }
